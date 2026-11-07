@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bearbit Cover (lite)
 // @namespace    kitti.local
-// @version      0.2.1
+// @version      0.3.0
 // @description  หน้าปก, รูปใหญ่, อัลบั้ม, ปุ่มขยาย, สีเทาเมื่อโหลดแล้ว ฯลฯ — เขียนใหม่จาก concept ของ cover-next
 // @homepageURL  https://github.com/kitti332/bearbit-cover
 // @updateURL    https://raw.githubusercontent.com/kitti332/bearbit-cover/main/bearbit-cover.user.js
@@ -288,37 +288,94 @@
   // =====================================================================
   // อัลบั้ม (lightbox)
   // =====================================================================
-  const openAlbum = (images, start = 0) => {
-    if (!images.length) return;
-    let i = start;
+  // items: URL รูป (string) หรือ { load: async () => url, caption: () => Node }
+  // ซ้อนกันได้ (อัลบั้มทั้งหน้า → รูปทั้งหมดของเรื่องเดียว) ปุ่มคีย์บอร์ดไปที่อันบนสุด
+  const albumStack = [];
+  document.addEventListener('keydown', (e) => {
+    const top = albumStack[albumStack.length - 1];
+    if (!top) return;
+    if (e.key === 'Escape') top.close();
+    else if (e.key === 'ArrowLeft') top.go(-1);
+    else if (e.key === 'ArrowRight') top.go(1);
+    else return;
+    e.preventDefault();
+    e.stopPropagation();
+  }, true);
+
+  const openAlbum = (rawItems, start = 0, { wrap = true } = {}) => {
+    const items = rawItems.map((it) => (typeof it === 'string' ? { load: async () => it } : it));
+    if (!items.length) return;
+    let i = Math.min(Math.max(0, start), items.length - 1);
+    let token = 0;
     const img = el('img', { className: 'bbc-album-img', referrerPolicy: 'no-referrer' });
+    const status = el('div', { className: 'bbc-album-status' });
     const counter = el('div', { className: 'bbc-album-count' });
-    const show = () => { img.src = images[i]; counter.textContent = `${i + 1} / ${images.length}`; };
-    const go = (d) => { i = (i + d + images.length) % images.length; show(); };
+    const caption = el('div', { className: 'bbc-album-caption', onclick: (e) => e.stopPropagation() });
     const prev = el('button', { className: 'bbc-album-nav bbc-prev', textContent: '‹', onclick: (e) => { e.stopPropagation(); go(-1); } });
     const next = el('button', { className: 'bbc-album-nav bbc-next', textContent: '›', onclick: (e) => { e.stopPropagation(); go(1); } });
-    const box = el('div', { className: 'bbc-album' }, img, counter, prev, next);
-    const close = () => { box.remove(); document.removeEventListener('keydown', onKey, true); };
-    const onKey = (e) => {
-      if (e.key === 'Escape') close();
-      else if (e.key === 'ArrowLeft') go(-1);
-      else if (e.key === 'ArrowRight') go(1);
-      else return;
-      e.preventDefault();
-      e.stopPropagation();
+    const box = el('div', { className: 'bbc-album' }, img, status, counter, caption, prev, next);
+
+    const preload = (j) => {
+      if (j < 0 || j >= items.length) return;
+      items[j].load().then((u) => { if (u) new Image().src = u; }).catch(() => {});
     };
+    const show = async () => {
+      const my = ++token;
+      const it = items[i];
+      counter.textContent = `${i + 1} / ${items.length}`;
+      caption.replaceChildren(...(it.caption ? [it.caption()] : []));
+      prev.disabled = !wrap && i === 0;
+      next.disabled = !wrap && i === items.length - 1;
+      img.style.visibility = 'hidden';
+      status.textContent = 'กำลังโหลด…';
+      let url = null;
+      try { url = await it.load(); } catch (e) { log('album load fail', e); }
+      if (my !== token) return; // เลื่อนไปรูปอื่นแล้ว
+      if (!url) { status.textContent = 'ไม่มีรูป'; img.removeAttribute('src'); return; }
+      img.onload = () => { if (my === token) { status.textContent = ''; img.style.visibility = ''; } };
+      img.onerror = () => { if (my === token) status.textContent = 'โหลดรูปไม่ได้'; };
+      img.src = url;
+      preload(i + 1);
+      preload(i - 1);
+    };
+    const go = (d) => {
+      const n = i + d;
+      if (wrap) i = (n + items.length) % items.length;
+      else if (n >= 0 && n < items.length) i = n;
+      else return;
+      show();
+    };
+    const close = () => {
+      box.remove();
+      const k = albumStack.indexOf(api);
+      if (k >= 0) albumStack.splice(k, 1);
+    };
+    const api = { go, close };
+
     img.onclick = (e) => { e.stopPropagation(); go(1); };
     box.onclick = close;
-    document.addEventListener('keydown', onKey, true);
+    albumStack.push(api);
     document.body.append(box);
-    if (images.length < 2) { prev.remove(); next.remove(); }
+    if (items.length < 2) { prev.remove(); next.remove(); counter.remove(); }
     show();
   };
 
   // =====================================================================
   // หน้ารายการ
   // =====================================================================
-  const parseRow = (tr) => {
+  // หาเลขคอลัมน์ ขนาด/เสร็จ/ปล่อย/ดูด จากหัวตาราง (สำหรับ caption ในอัลบั้ม)
+  const COLS = {
+    size: ['ขนาด', 'ขนาดไฟล์', 'Size'],
+    done: ['เสร็จ', 'โหลดเสร็จ', 'คนโหลดเสร็จ'],
+    seed: ['ปล่อย', 'คนปล่อย', 'Seeder'],
+    peer: ['ดูด', 'คนดูด', 'Leecher'],
+  };
+  const columnIndex = (headRow) => {
+    const heads = [...headRow.cells].map((c) => c.textContent.trim());
+    return Object.fromEntries(Object.entries(COLS).map(([k, names]) => [k, heads.findIndex((h) => names.includes(h))]));
+  };
+
+  const parseRow = (tr, cols = {}) => {
     if (!tr.cells || tr.cells.length < 2) return null;
     // หาลิงก์ details จากทั้งแถว ไม่ผูกเลขคอลัมน์ (layout ใหม่มีคอลัมน์ "รูป" แทรกที่ index 1)
     const titleLink = tr.querySelector('a[href*="details.php"][href*="id="]');
@@ -327,10 +384,14 @@
     const camLink = tr.querySelector('a > img[src*="cam"]')?.parentElement;
     const nativeImg = tr.querySelector('td.poster-column img');
     const nativeSrc = nativeImg?.getAttribute('src') || '';
+    // ดึงค่าตอน parse (ก่อนเราแทรกคอลัมน์ปก ซึ่งจะทำให้เลขคอลัมน์เลื่อน)
+    const stat = (k) => (cols[k] >= 0 ? tr.cells[cols[k]]?.textContent.trim() : '') || '-';
     return {
       tr,
       id,
       titleLink,
+      title: titleLink.textContent.trim(),
+      stats: { size: stat('size'), done: stat('done'), seed: stat('seed'), peer: stat('peer') },
       detailUrl: new URL(titleLink.getAttribute('href'), location.href).href,
       directCover: camLink?.getAttribute('href') || null,
       nativeImg: nativeImg && !/no_poster/i.test(nativeSrc) ? nativeImg : null,
@@ -361,15 +422,49 @@
     return img;
   };
 
+  // caption ใต้รูปในอัลบั้มทั้งหน้า: ชื่อ, ดาวน์โหลด, สถิติ, ปุ่มดูรูปทั้งหมดของเรื่องนี้
+  const rowCaption = (row) => {
+    const box = el('div', {},
+      el('a', { href: row.detailUrl, target: '_blank', className: 'bbc-cap-title', textContent: row.title }));
+    const line = el('div', { className: 'bbc-cap-line' });
+    if (row.downloadLinks[0]) {
+      line.append(el('a', {
+        href: row.downloadLinks[0].href,
+        className: 'bbc-cap-btn',
+        textContent: downloaded.has(row.id) ? '⬇ Download (โหลดไปแล้ว)' : '⬇ Download',
+        onclick: () => markRow(row),
+      }));
+    }
+    line.append(el('a', {
+      href: '#',
+      className: 'bbc-cap-btn',
+      textContent: '🖼 รูปทั้งหมดของเรื่องนี้',
+      onclick: async (e) => {
+        e.preventDefault();
+        openAlbum(await albumOf(row));
+      },
+    }));
+    const { size, done, seed, peer } = row.stats;
+    line.append(el('span', { textContent: `ขนาด: ${size} | เสร็จ: ${done} | ปล่อย: ${seed} | ดูด: ${peer}` }));
+    box.append(line);
+    return box;
+  };
+
+  // อัลบั้มทั้งหน้า: ปกของทุก torrent เรียงต่อกัน ← → เปลี่ยนเรื่อง (แบบ cover-next เดิม)
+  const openPageAlbum = (row) => {
+    const items = allRows.map((r) => ({ load: () => bigCoverOf(r), caption: () => rowCaption(r) }));
+    openAlbum(items, allRows.indexOf(row), { wrap: false });
+  };
+
   const wireCover = (img, row) => {
     if (cfg.previewHover) attachHover(img, () => bigCoverOf(row));
     if (cfg.album) {
       img.style.cursor = 'zoom-in';
-      img.addEventListener('click', async (e) => {
+      img.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
         hideHover();
-        openAlbum(await albumOf(row));
+        openPageAlbum(row);
       });
     }
   };
@@ -494,9 +589,10 @@
         // เว็บซ่อนคอลัมน์รูปด้วย class บน <html> (ปุ่ม "แสดงรูปภาพ") → เปิดให้เสมอ
         document.documentElement.classList.remove('hide-posters-general');
       }
+      const cols = columnIndex(table.rows[0]);
       const rows = [];
       for (const tr of [...table.rows].slice(1)) {
-        const row = parseRow(tr);
+        const row = parseRow(tr, cols);
         if (row) rows.push(row);
         else if (addColumn && tr.cells.length) tr.cells[tr.cells.length - 1].colSpan += 1;
       }
@@ -629,6 +725,21 @@
       background: none; border: 0; color: #fff; cursor: pointer; padding: 16px; opacity: .7;
     }
     .bbc-album-nav:hover { opacity: 1; }
+    .bbc-album-nav:disabled { opacity: .15; cursor: default; }
+    .bbc-album-img { max-height: calc(100vh - 140px); }
+    .bbc-album-status { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); color: #ccc; font: 16px sans-serif; }
+    .bbc-album-caption {
+      position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%);
+      max-width: 90vw; text-align: center; color: #eee; font: 14px/1.5 sans-serif;
+      background: rgba(0,0,0,.6); padding: 8px 14px; border-radius: 6px;
+    }
+    .bbc-album-caption:empty { display: none; }
+    .bbc-cap-title { color: #fff !important; font-weight: bold; font-size: 15px; }
+    .bbc-cap-line { margin-top: 6px; display: flex; gap: 10px; justify-content: center; align-items: center; flex-wrap: wrap; }
+    .bbc-cap-btn {
+      color: #fff !important; text-decoration: none; background: #2e7d32; padding: 3px 10px; border-radius: 4px;
+    }
+    .bbc-cap-btn + .bbc-cap-btn { background: #455a64; }
     .bbc-prev { left: 8px; } .bbc-next { right: 8px; }
   `);
 
