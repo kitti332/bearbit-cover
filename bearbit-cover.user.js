@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bearbit Cover (lite)
 // @namespace    kitti.local
-// @version      0.6.0
+// @version      0.6.1
 // @description  หน้าปก, รูปใหญ่, อัลบั้ม, ปุ่มขยาย, สีเทาเมื่อโหลดแล้ว ฯลฯ — เขียนใหม่จาก concept ของ cover-next
 // @homepageURL  https://github.com/kitti332/bearbit-cover
 // @updateURL    https://raw.githubusercontent.com/kitti332/bearbit-cover/main/bearbit-cover.user.js
@@ -363,13 +363,17 @@
     target.addEventListener('mouseleave', hideHover);
   };
 
-  // รูปย่อ images.weserv.nl ของเว็บ (w=200,h=280) → ขอขนาดใหญ่จาก proxy เดิม
+  // รูปย่อ images.weserv.nl ของเว็บ (w=200,h=280,fit=inside) → ขอขนาดใหญ่จาก proxy เดิม
+  // ขอตามความกว้างอย่างเดียว: ถ้าใส่ h ด้วย proxy จะย่อรูปยาว (contact sheet) จนเหลือแถบแคบ ๆ
+  // ตั้งแต่ต้นทาง โหมดย่อใน CSS ก็ช่วยไม่ได้ (บั๊ก v0.6.0) — การย่อให้พอดีจอปล่อยให้ CSS ทำ
   const enlarge = (src) => {
     try {
       const u = new URL(src, location.href);
       if (!/(^|\.)weserv\.nl$/.test(u.hostname)) return src;
-      u.searchParams.set('w', '700');
-      u.searchParams.set('h', '1000');
+      u.searchParams.delete('h');
+      u.searchParams.delete('a');
+      u.searchParams.set('w', '1600');
+      u.searchParams.set('we', '1'); // without enlargement: รูปเล็กกว่า 1600 ไม่ถูกขยายจนแตก
       return u.href;
     } catch { return src; }
   };
