@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bearbit Cover (lite)
 // @namespace    kitti.local
-// @version      0.4.1
+// @version      0.5.0
 // @description  หน้าปก, รูปใหญ่, อัลบั้ม, ปุ่มขยาย, สีเทาเมื่อโหลดแล้ว ฯลฯ — เขียนใหม่จาก concept ของ cover-next
 // @homepageURL  https://github.com/kitti332/bearbit-cover
 // @updateURL    https://raw.githubusercontent.com/kitti332/bearbit-cover/main/bearbit-cover.user.js
@@ -85,7 +85,6 @@
     ['downloadHistory', true,  'ดึงประวัติโหลดย้อนหลัง (downfinish)'],
     ['autoThankDetail', true,  'ขอบคุณอัตโนมัติ (หน้ารายละเอียด)'],
     ['autoThankList',   true,  'ขอบคุณอัตโนมัติก่อนโหลด (หน้ารายการ)'],
-    ['fixImageOverScreen', true, 'ย่อรูปไม่ให้ล้นจอ (หน้ารายละเอียด)'],
     ['autoReadLetter',  true,  'อ่านจดหมาย แจ้งเพื่อทราบ/เกมส์ อัตโนมัติ'],
     ['cleanBookmarks',  true,  'ซ่อน Bookmarks (หน้ารายละเอียด)'],
     ['cleanPromote',    true,  'ซ่อน Promote this Item (หน้ารายละเอียด)'],
@@ -102,6 +101,32 @@
       location.reload();
     });
   }
+  // ---------- ย่อรูปในคำอธิบาย: กว้าง / สูง / ทั้งสอง / ปิด ----------
+  const FIT_MODES = [
+    ['width',  'ตามความกว้าง'],
+    ['height', 'ตามความสูง'],
+    ['both',   'ทั้งสองอย่าง'],
+    ['off',    'ไม่ย่อ'],
+  ];
+  // v0.4 ใช้ boolean fixImageOverScreen
+  if (!FIT_MODES.some(([m]) => m === cfg.fitMode)) cfg.fitMode = cfg.fixImageOverScreen === false ? 'off' : 'width';
+  const applyFit = () => {
+    const html = document.documentElement;
+    FIT_MODES.forEach(([m]) => html.classList.toggle(`bbc-fit-${m}`, cfg.fitMode === m));
+  };
+  const setFitMode = (mode) => {
+    cfg.fitMode = mode;
+    GM_setValue('settings', cfg);
+    applyFit();
+    document.querySelectorAll('.bbc-fit-bar').forEach((bar) =>
+      bar.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.mode === mode)));
+  };
+  GM_registerMenuCommand(`📐 ย่อรูป: ${FIT_MODES.find(([m]) => m === cfg.fitMode)[1]} (กดเพื่อเปลี่ยน)`, () => {
+    const i = FIT_MODES.findIndex(([m]) => m === cfg.fitMode);
+    setFitMode(FIT_MODES[(i + 1) % FIT_MODES.length][0]);
+    location.reload();
+  });
+
   cfg.downloadWarnGB = Number(cfg.downloadWarnGB) || 10;
   GM_registerMenuCommand(`⚠ เตือนไฟล์ใหญ่เกิน ${cfg.downloadWarnGB} GB (แก้)`, () => {
     const v = Number(prompt('ปุ่ม Download เป็นสีแดงเมื่อไฟล์ใหญ่กว่า (GB):', cfg.downloadWarnGB));
@@ -534,12 +559,28 @@
     return panel;
   };
 
+  // แถบปุ่มสลับโหมดย่อรูป (ใช้ทั้งหน้ารายละเอียดและ popup View) — กดแล้วเปลี่ยนทันทีและจำค่าไว้
+  const fitBar = () => {
+    const buttons = FIT_MODES.map(([mode, label]) => {
+      const b = el('button', {
+        type: 'button',
+        textContent: label,
+        className: cfg.fitMode === mode ? 'on' : '',
+        onclick: (e) => { e.preventDefault(); e.stopPropagation(); setFitMode(mode); },
+      });
+      b.dataset.mode = mode;
+      return b;
+    });
+    return el('div', { className: 'bbc-fit-bar' }, el('span', { textContent: '📐 ย่อรูป:' }), ...buttons);
+  };
+
   const openDescription = async (row) => {
     const body = el('div', { className: 'bbc-desc', textContent: 'กำลังโหลด…' });
     const head = el('div', { className: 'bbc-desc-head' },
       el('a', { href: row.detailUrl, target: '_blank', className: 'bbc-desc-title', textContent: row.title }));
     const dl = downloadButton(row);
     if (dl) head.append(dl);
+    head.append(fitBar());
     openModal(el('div', {}, head, body));
     try {
       const doc = await detailDoc(row.id, row.detailUrl);
@@ -810,7 +851,9 @@
       a.addEventListener('click', () => markAsDownloaded(id)));
     // เว็บบอกเองว่าเคยโหลดแล้ว
     if (DOWNLOADED_MARK.test(document.body.textContent)) markAsDownloaded(id);
-    if (cfg.fixImageOverScreen) document.documentElement.classList.add('bbc-fit-images');
+    // แถบปุ่มสลับโหมดย่อรูป วางเหนือคำอธิบาย
+    const descr = document.querySelector('.bb-descr');
+    if (descr) descr.before(fitBar());
     if (cfg.cleanBookmarks) {
       document.querySelectorAll('a[href*="bookmarks.php"]').forEach((a) => { a.style.display = 'none'; });
     }
@@ -856,9 +899,21 @@
     .bbc-cell { width: 90px; text-align: center; vertical-align: middle; }
     /* ย่อเฉพาะรูปในคำอธิบาย — ห้ามใช้กับ td img ทั่วไป: แถบ Traffic ของเว็บเป็นรูปที่บีบความสูงไว้
        ถ้าโดน height:auto จะกลายเป็นแท่งแนวตั้งยาว (บั๊ก v0.4.0) */
-    html.bbc-fit-images .bb-descr img, .bbc-desc img {
+    html.bbc-fit-width .bb-descr img, html.bbc-fit-width .bbc-desc img,
+    html.bbc-fit-both .bb-descr img, html.bbc-fit-both .bbc-desc img {
       max-width: 100% !important; height: auto !important;
     }
+    /* ตามความสูง: รูปยาวมากจะย่อให้ทั้งรูปอยู่ในจอเดียว (กว้างตามสัดส่วน) */
+    html.bbc-fit-height .bb-descr img, html.bbc-fit-height .bbc-desc img,
+    html.bbc-fit-both .bb-descr img, html.bbc-fit-both .bbc-desc img {
+      max-height: 85vh !important; width: auto !important; height: auto !important;
+    }
+    .bbc-fit-bar { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; margin: 6px 0; font-size: 12px; }
+    .bbc-fit-bar button {
+      border: 1px solid #90a4ae; background: #fff; color: #37474f; border-radius: 4px;
+      padding: 2px 8px; cursor: pointer; font-size: 12px;
+    }
+    .bbc-fit-bar button.on { background: #1565c0; border-color: #1565c0; color: #fff; }
     .bbc-btn {
       display: inline-block; color: #fff !important; text-decoration: none !important; background: #455a64;
       padding: 3px 10px; border-radius: 4px; font-size: 12px; line-height: 1.6; white-space: nowrap;
@@ -926,6 +981,8 @@
   // =====================================================================
   const path = location.pathname;
   const safe = (name, fn) => { try { return fn(); } catch (e) { console.error('[bb-cover]', name, e); } };
+
+  applyFit();
 
   if (cfg.autoReadLetter) safe('letter', readLetters);
   if (path === '/details.php') safe('detail', runDetailPage);
