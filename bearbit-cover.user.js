@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bearbit Cover (lite)
 // @namespace    kitti.local
-// @version      0.2.0
+// @version      0.2.1
 // @description  หน้าปก, รูปใหญ่, อัลบั้ม, ปุ่มขยาย, สีเทาเมื่อโหลดแล้ว ฯลฯ — เขียนใหม่จาก concept ของ cover-next
 // @homepageURL  https://github.com/kitti332/bearbit-cover
 // @updateURL    https://raw.githubusercontent.com/kitti332/bearbit-cover/main/bearbit-cover.user.js
@@ -38,6 +38,34 @@
 // @grant        GM_registerMenuCommand
 // @grant        GM_addStyle
 // @grant        GM_xmlhttpRequest
+// @connect      imgbb.ws
+// @connect      ibb.co
+// @connect      imgbb.com
+// @connect      imgbb.me
+// @connect      img.in.th
+// @connect      in.th
+// @connect      imgur.com
+// @connect      postto.me
+// @connect      picz.in.th
+// @connect      234.in.th
+// @connect      uppic.cc
+// @connect      uppicimg.com
+// @connect      uppic.xyz
+// @connect      gifyu.com
+// @connect      imgvb.com
+// @connect      up-pic.com
+// @connect      pic.4th.in
+// @connect      shotcan.com
+// @connect      img.live
+// @connect      mpic.ws
+// @connect      roop.xyz
+// @connect      bpicc.com
+// @connect      bpicc.cc
+// @connect      imgtrue.com
+// @connect      i-pic.info
+// @connect      picstate.com
+// @connect      lookimg.com
+// @connect      imgmak.com
 // @connect      *
 // ==/UserScript==
 

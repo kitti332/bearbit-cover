@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bearbit Cover (lite) — local loader
 // @namespace    kitti.local
-// @version      0.2.0
+// @version      0.2.1
 // @description  ตัวโหลด: ดึง bearbit-cover.user.js จากไฟล์ในเครื่อง แก้ไฟล์นั้นแล้ว refresh หน้าเว็บได้เลย
 // @match        https://www.bearbit.org
 // @match        https://www.bearbit.org/index.php*
@@ -35,6 +35,34 @@
 // @grant        GM_registerMenuCommand
 // @grant        GM_addStyle
 // @grant        GM_xmlhttpRequest
+// @connect      imgbb.ws
+// @connect      ibb.co
+// @connect      imgbb.com
+// @connect      imgbb.me
+// @connect      img.in.th
+// @connect      in.th
+// @connect      imgur.com
+// @connect      postto.me
+// @connect      picz.in.th
+// @connect      234.in.th
+// @connect      uppic.cc
+// @connect      uppicimg.com
+// @connect      uppic.xyz
+// @connect      gifyu.com
+// @connect      imgvb.com
+// @connect      up-pic.com
+// @connect      pic.4th.in
+// @connect      shotcan.com
+// @connect      img.live
+// @connect      mpic.ws
+// @connect      roop.xyz
+// @connect      bpicc.com
+// @connect      bpicc.cc
+// @connect      imgtrue.com
+// @connect      i-pic.info
+// @connect      picstate.com
+// @connect      lookimg.com
+// @connect      imgmak.com
 // @connect      *
 // @require      file:///C:/Users/kitti/Desktop/barebit-image/bearbit-cover.user.js
 // ==/UserScript==
