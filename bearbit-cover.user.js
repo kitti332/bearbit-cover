@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bearbit Cover (lite)
 // @namespace    kitti.local
-// @version      0.5.0
+// @version      0.6.0
 // @description  หน้าปก, รูปใหญ่, อัลบั้ม, ปุ่มขยาย, สีเทาเมื่อโหลดแล้ว ฯลฯ — เขียนใหม่จาก concept ของ cover-next
 // @homepageURL  https://github.com/kitti332/bearbit-cover
 // @updateURL    https://raw.githubusercontent.com/kitti332/bearbit-cover/main/bearbit-cover.user.js
@@ -101,31 +101,45 @@
       location.reload();
     });
   }
-  // ---------- ย่อรูปในคำอธิบาย: กว้าง / สูง / ทั้งสอง / ปิด ----------
+  // ---------- ย่อรูป: กว้าง / สูง / ทั้งสอง / ปิด ----------
+  // มี 2 ชุดแยกกัน: fitMode = รูปในคำอธิบาย, previewFit = รูปใหญ่ตอนชี้เมาส์ + อัลบั้ม
+  // แต่ละชุดใส่ class บน <html> (bbc-fit-* / bbc-pfit-*) แล้วให้ CSS จัดการ
   const FIT_MODES = [
     ['width',  'ตามความกว้าง'],
     ['height', 'ตามความสูง'],
     ['both',   'ทั้งสองอย่าง'],
     ['off',    'ไม่ย่อ'],
   ];
+  const FIT_SETS = {
+    fitMode:    { prefix: 'bbc-fit-',  label: 'ย่อรูปคำอธิบาย' },
+    previewFit: { prefix: 'bbc-pfit-', label: 'ย่อรูป preview/อัลบั้ม' },
+  };
+  const isFit = (m) => FIT_MODES.some(([x]) => x === m);
   // v0.4 ใช้ boolean fixImageOverScreen
-  if (!FIT_MODES.some(([m]) => m === cfg.fitMode)) cfg.fitMode = cfg.fixImageOverScreen === false ? 'off' : 'width';
+  if (!isFit(cfg.fitMode)) cfg.fitMode = cfg.fixImageOverScreen === false ? 'off' : 'width';
+  if (!isFit(cfg.previewFit)) cfg.previewFit = 'both'; // = พฤติกรรมเดิมก่อน v0.6
   const applyFit = () => {
     const html = document.documentElement;
-    FIT_MODES.forEach(([m]) => html.classList.toggle(`bbc-fit-${m}`, cfg.fitMode === m));
+    for (const [key, { prefix }] of Object.entries(FIT_SETS)) {
+      FIT_MODES.forEach(([m]) => html.classList.toggle(prefix + m, cfg[key] === m));
+    }
   };
-  const setFitMode = (mode) => {
-    cfg.fitMode = mode;
+  const fitListeners = []; // เรียกเมื่อโหมดเปลี่ยน (เช่น จัดตำแหน่ง hover ใหม่)
+  const setFitMode = (key, mode) => {
+    cfg[key] = mode;
     GM_setValue('settings', cfg);
     applyFit();
-    document.querySelectorAll('.bbc-fit-bar').forEach((bar) =>
-      bar.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.mode === mode)));
+    document.querySelectorAll(`.bbc-fit-bar[data-key="${key}"] button`).forEach((b) =>
+      b.classList.toggle('on', b.dataset.mode === mode));
+    fitListeners.forEach((fn) => fn(key, mode));
   };
-  GM_registerMenuCommand(`📐 ย่อรูป: ${FIT_MODES.find(([m]) => m === cfg.fitMode)[1]} (กดเพื่อเปลี่ยน)`, () => {
-    const i = FIT_MODES.findIndex(([m]) => m === cfg.fitMode);
-    setFitMode(FIT_MODES[(i + 1) % FIT_MODES.length][0]);
-    location.reload();
-  });
+  for (const [key, { label }] of Object.entries(FIT_SETS)) {
+    GM_registerMenuCommand(`📐 ${label}: ${FIT_MODES.find(([m]) => m === cfg[key])[1]} (กดเพื่อเปลี่ยน)`, () => {
+      const i = FIT_MODES.findIndex(([m]) => m === cfg[key]);
+      setFitMode(key, FIT_MODES[(i + 1) % FIT_MODES.length][0]);
+      location.reload();
+    });
+  }
 
   cfg.downloadWarnGB = Number(cfg.downloadWarnGB) || 10;
   GM_registerMenuCommand(`⚠ เตือนไฟล์ใหญ่เกิน ${cfg.downloadWarnGB} GB (แก้)`, () => {
@@ -312,17 +326,30 @@
     hoverImg.style.display = 'block';
     moveHover(ev);
   };
+  let lastHoverEv = null;
+  // รูปที่ใหญ่กว่าจอ (โหมด "ตามความกว้าง"/"ไม่ย่อ") จะเลื่อนตามเมาส์:
+  // เมาส์บนสุดของจอ = เห็นหัวรูป, ล่างสุด = เห็นท้ายรูป (แนวนอนก็เหมือนกัน)
+  const pan = (size, view, pos, pad) => pad - (size - (view - 2 * pad)) * Math.min(1, Math.max(0, pos / view));
   const moveHover = (ev) => {
     if (!hoverImg || hoverImg.style.display === 'none') return;
+    lastHoverEv = ev;
     const pad = 16;
     const w = hoverImg.offsetWidth || 300;
     const h = hoverImg.offsetHeight || 400;
-    let x = ev.clientX + pad;
-    if (x + w > innerWidth) x = Math.max(pad, ev.clientX - w - pad);
-    const y = Math.min(Math.max(pad, ev.clientY - h / 2), innerHeight - h - pad);
+    let x;
+    if (w > innerWidth - 2 * pad) x = pan(w, innerWidth, ev.clientX, pad);
+    else {
+      x = ev.clientX + pad;
+      if (x + w > innerWidth) x = ev.clientX - w - pad;           // ชิดขวา → ย้ายไปซ้ายเมาส์
+      x = Math.min(Math.max(pad, x), innerWidth - w - pad);       // รูปกว้าง → ให้อยู่ในจอ
+    }
+    const y = h > innerHeight - 2 * pad
+      ? pan(h, innerHeight, ev.clientY, pad)
+      : Math.min(Math.max(pad, ev.clientY - h / 2), innerHeight - h - pad);
     hoverImg.style.left = `${x}px`;
     hoverImg.style.top = `${y}px`;
   };
+  fitListeners.push(() => { if (lastHoverEv) moveHover(lastHoverEv); });
   const hideHover = () => { hoverToken++; if (hoverImg) hoverImg.style.display = 'none'; };
 
   // getUrl อาจเป็น async (ต้องโหลดหน้ารายละเอียดก่อน) → ใช้ token กันรูปเด้งหลังเมาส์ออกไปแล้ว
@@ -375,7 +402,8 @@
     const caption = el('div', { className: 'bbc-album-caption', onclick: (e) => e.stopPropagation() });
     const prev = el('button', { className: 'bbc-album-nav bbc-prev', textContent: '‹', onclick: (e) => { e.stopPropagation(); go(-1); } });
     const next = el('button', { className: 'bbc-album-nav bbc-next', textContent: '›', onclick: (e) => { e.stopPropagation(); go(1); } });
-    const box = el('div', { className: 'bbc-album' }, img, status, counter, caption, prev, next);
+    const box = el('div', { className: 'bbc-album' }, img, status, counter, caption, prev, next,
+      fitBar('previewFit', 'bbc-album-fit'));
 
     const preload = (j) => {
       if (j < 0 || j >= items.length) return;
@@ -397,6 +425,7 @@
       img.onload = () => { if (my === token) { status.textContent = ''; img.style.visibility = ''; } };
       img.onerror = () => { if (my === token) status.textContent = 'โหลดรูปไม่ได้'; };
       img.src = url;
+      box.scrollTo?.(0, 0); // รูปยาว: เริ่มดูจากหัวรูปทุกครั้งที่เปลี่ยนรูป
       preload(i + 1);
       preload(i - 1);
     };
@@ -560,18 +589,21 @@
   };
 
   // แถบปุ่มสลับโหมดย่อรูป (ใช้ทั้งหน้ารายละเอียดและ popup View) — กดแล้วเปลี่ยนทันทีและจำค่าไว้
-  const fitBar = () => {
+  const fitBar = (key = 'fitMode', extraClass = '') => {
     const buttons = FIT_MODES.map(([mode, label]) => {
       const b = el('button', {
         type: 'button',
         textContent: label,
-        className: cfg.fitMode === mode ? 'on' : '',
-        onclick: (e) => { e.preventDefault(); e.stopPropagation(); setFitMode(mode); },
+        className: cfg[key] === mode ? 'on' : '',
+        onclick: (e) => { e.preventDefault(); e.stopPropagation(); setFitMode(key, mode); },
       });
       b.dataset.mode = mode;
       return b;
     });
-    return el('div', { className: 'bbc-fit-bar' }, el('span', { textContent: '📐 ย่อรูป:' }), ...buttons);
+    const bar = el('div', { className: `bbc-fit-bar ${extraClass}`, onclick: (e) => e.stopPropagation() },
+      el('span', { textContent: '📐 ย่อรูป:' }), ...buttons);
+    bar.dataset.key = key;
+    return bar;
   };
 
   const openDescription = async (row) => {
@@ -939,40 +971,45 @@
     .bbc-thumb { max-width: 84px; max-height: 118px; display: block; margin: auto; border-radius: 4px; }
     .bbc-hover {
       position: fixed; z-index: 99998; display: none; pointer-events: none;
-      max-width: 45vw; max-height: 88vh; box-shadow: 0 4px 24px rgba(0,0,0,.6); background: #111; border-radius: 4px;
+      box-shadow: 0 4px 24px rgba(0,0,0,.6); background: #111; border-radius: 4px;
     }
+    /* preview ตอนชี้เมาส์ ตามโหมด previewFit — ใหญ่กว่าจอได้ แล้วเลื่อนตามเมาส์ (moveHover) */
+    html.bbc-pfit-both   .bbc-hover { max-width: 45vw; max-height: 88vh; }
+    html.bbc-pfit-width  .bbc-hover { max-width: 45vw; }
+    html.bbc-pfit-height .bbc-hover { max-height: 88vh; }
     tr.bbc-done a b, tr.bbc-done a { color: #999 !important; }
     .bbc-expand-btn { font-size: 11px; color: #888 !important; text-decoration: none; white-space: nowrap; }
     .bbc-expand-cell { padding: 8px !important; background: rgba(0,0,0,.04); }
     .bbc-expand-bar { margin-bottom: 6px; font-weight: bold; }
     .bbc-expand-grid { display: flex; flex-wrap: wrap; gap: 6px; }
     .bbc-expand-grid img { max-height: 260px; max-width: 100%; cursor: zoom-in; border-radius: 4px; }
+    /* scroll ได้เมื่อรูปใหญ่กว่าจอ; img ใช้ margin:auto จัดกลาง (align-items:center จะตัดหัวรูปยาวทิ้ง) */
     .bbc-album {
       position: fixed; inset: 0; z-index: 99999; background: rgba(0,0,0,.88);
-      display: flex; align-items: center; justify-content: center;
+      display: flex; overflow: auto; padding: 48px 0 110px; box-sizing: border-box;
     }
-    .bbc-album-img { max-width: 92vw; max-height: 90vh; cursor: pointer; box-shadow: 0 4px 32px #000; }
-    .bbc-album-count { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); color: #ddd; font: 14px sans-serif; }
+    .bbc-album-img { margin: auto; cursor: pointer; box-shadow: 0 4px 32px #000; flex: none; }
+    html.bbc-pfit-both   .bbc-album-img { max-width: 92vw; max-height: calc(100vh - 160px); }
+    html.bbc-pfit-width  .bbc-album-img { max-width: 92vw; }
+    html.bbc-pfit-height .bbc-album-img { max-height: calc(100vh - 160px); }
+    .bbc-album-fit { position: fixed; top: 8px; left: 12px; z-index: 1; margin: 0; }
+    .bbc-album-fit span { color: #ddd; }
+    .bbc-album-count { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); color: #ddd; font: 14px sans-serif; }
     .bbc-album-nav {
-      position: absolute; top: 50%; transform: translateY(-50%); font-size: 48px; line-height: 1;
+      position: fixed; top: 50%; transform: translateY(-50%); font-size: 48px; line-height: 1;
       background: none; border: 0; color: #fff; cursor: pointer; padding: 16px; opacity: .7;
     }
     .bbc-album-nav:hover { opacity: 1; }
     .bbc-album-nav:disabled { opacity: .15; cursor: default; }
-    .bbc-album-img { max-height: calc(100vh - 140px); }
-    .bbc-album-status { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); color: #ccc; font: 16px sans-serif; }
+    .bbc-album-status { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%); color: #ccc; font: 16px sans-serif; }
     .bbc-album-caption {
-      position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%);
+      position: fixed; left: 50%; bottom: 12px; transform: translateX(-50%);
       max-width: 90vw; text-align: center; color: #eee; font: 14px/1.5 sans-serif;
       background: rgba(0,0,0,.6); padding: 8px 14px; border-radius: 6px;
     }
     .bbc-album-caption:empty { display: none; }
     .bbc-cap-title { color: #fff !important; font-weight: bold; font-size: 15px; }
     .bbc-cap-line { margin-top: 6px; display: flex; gap: 10px; justify-content: center; align-items: center; flex-wrap: wrap; }
-    .bbc-cap-btn {
-      color: #fff !important; text-decoration: none; background: #2e7d32; padding: 3px 10px; border-radius: 4px;
-    }
-    .bbc-cap-btn + .bbc-cap-btn { background: #455a64; }
     .bbc-prev { left: 8px; } .bbc-next { right: 8px; }
   `);
 
