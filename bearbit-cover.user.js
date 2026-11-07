@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bearbit Cover (lite)
 // @namespace    kitti.local
-// @version      0.3.0
+// @version      0.4.0
 // @description  หน้าปก, รูปใหญ่, อัลบั้ม, ปุ่มขยาย, สีเทาเมื่อโหลดแล้ว ฯลฯ — เขียนใหม่จาก concept ของ cover-next
 // @homepageURL  https://github.com/kitti332/bearbit-cover
 // @updateURL    https://raw.githubusercontent.com/kitti332/bearbit-cover/main/bearbit-cover.user.js
@@ -84,6 +84,8 @@
     ['markDownloaded',  true,  'ชื่อสีเทาถ้าโหลดแล้ว'],
     ['downloadHistory', true,  'ดึงประวัติโหลดย้อนหลัง (downfinish)'],
     ['autoThankDetail', true,  'ขอบคุณอัตโนมัติ (หน้ารายละเอียด)'],
+    ['autoThankList',   true,  'ขอบคุณอัตโนมัติก่อนโหลด (หน้ารายการ)'],
+    ['fixImageOverScreen', true, 'ย่อรูปไม่ให้ล้นจอ (หน้ารายละเอียด)'],
     ['autoReadLetter',  true,  'อ่านจดหมาย แจ้งเพื่อทราบ/เกมส์ อัตโนมัติ'],
     ['cleanBookmarks',  true,  'ซ่อน Bookmarks (หน้ารายละเอียด)'],
     ['cleanPromote',    true,  'ซ่อน Promote this Item (หน้ารายละเอียด)'],
@@ -100,6 +102,11 @@
       location.reload();
     });
   }
+  cfg.downloadWarnGB = Number(cfg.downloadWarnGB) || 10;
+  GM_registerMenuCommand(`⚠ เตือนไฟล์ใหญ่เกิน ${cfg.downloadWarnGB} GB (แก้)`, () => {
+    const v = Number(prompt('ปุ่ม Download เป็นสีแดงเมื่อไฟล์ใหญ่กว่า (GB):', cfg.downloadWarnGB));
+    if (v > 0) { cfg.downloadWarnGB = v; GM_setValue('settings', cfg); location.reload(); }
+  });
   GM_registerMenuCommand('🗑 ล้าง cache รูป', () => { store.write('details', {}); location.reload(); });
   GM_registerMenuCommand('🔄 ดึงประวัติโหลดใหม่ทั้งหมด', () => {
     store.write('history', { at: 0, complete: false });
@@ -119,6 +126,13 @@
     },
   };
 
+  // v0.3.x เก็บ id ผู้ใช้ (userdetails.php?id=) ปนเข้ามาใน downloaded → ล้างครั้งเดียวแล้วดึงประวัติใหม่
+  if (!store.read('migratedUserIds', false)) {
+    store.write('downloaded', []);
+    store.write('history', { at: 0, complete: false });
+    store.write('migratedUserIds', true);
+  }
+
   const downloaded = new Set(store.read('downloaded', []));
   const saveDownloaded = () => store.write('downloaded', [...downloaded]);
   const markAsDownloaded = (id) => {
@@ -134,6 +148,14 @@
     const m = /[?&]id=(\d+)/.exec(href || '');
     return m ? m[1] : null; // cover-next เดิมพังตรงนี้ (เรียก [1] บน null)
   };
+  // id ของ torrent จากลิงก์ details.php เท่านั้น — "userdetails.php" ก็ลงท้ายด้วย details.php ต้องกันไว้
+  const TORRENT_HREF = /(^|\/)details\.php\?(.*&)?id=\d+/;
+  const torrentIdFromHref = (href) => (TORRENT_HREF.test(href || '') ? idFromHref(href) : null);
+  const torrentLinks = (root) => [...root.querySelectorAll('a[href*="details.php"]')]
+    .filter((a) => TORRENT_HREF.test(a.getAttribute('href') || ''));
+
+  // หน้ารายละเอียดของเรื่องที่เคยโหลด เขียนว่า "คุณเคยดาวน์โหลดไฟล์ .torrent นี้แล้ว"
+  const DOWNLOADED_MARK = /คุณเคยดาวน์โหลดไฟล์ \.torrent นี้แล้ว|เคยโหลดแล้ว \/ โหลดซ้ำ|\(Downloaded ไปแล้ว\)/;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const el = (tag, props = {}, ...children) => {
     const node = Object.assign(document.createElement(tag), props);
@@ -223,17 +245,32 @@
     return { cover: images[0] || '', images: images.slice(0, 30) };
   };
 
+  // เอกสารหน้ารายละเอียดเก็บไว้ในหน่วยความจำระหว่างเปิดหน้านี้ (ใช้ร่วมกัน: ปก / คำอธิบาย / ขอบคุณ)
+  const docCache = new Map();
+  const onDetailDoc = []; // callback(id, doc) เช่น จับว่าเคยโหลดแล้ว
+  const detailDoc = (id, url) => {
+    if (!docCache.has(id)) {
+      const p = queued(() => fetchDoc(url)).then((doc) => {
+        onDetailDoc.forEach((fn) => fn(id, doc));
+        return doc;
+      });
+      p.catch(() => docCache.delete(id)); // พลาดแล้วให้ลองใหม่ได้
+      docCache.set(id, p);
+    }
+    return docCache.get(id);
+  };
+
   const getDetail = (id, url) => {
     const hit = detailCache[id];
     if (hit && Date.now() - hit.at < DETAIL_TTL) return Promise.resolve(hit);
     if (inflight.has(id)) return inflight.get(id);
-    const p = queued(async () => {
-      const info = { ...(await parseDetail(await fetchDoc(url))), at: Date.now() };
+    const p = (async () => {
+      const info = { ...(await parseDetail(await detailDoc(id, url))), at: Date.now() };
       detailCache[id] = info;
       store.write('details', detailCache);
       log('detail', id, info.images.length, 'images');
       return info;
-    }).finally(() => inflight.delete(id));
+    })().finally(() => inflight.delete(id));
     inflight.set(id, p);
     return p;
   };
@@ -378,8 +415,8 @@
   const parseRow = (tr, cols = {}) => {
     if (!tr.cells || tr.cells.length < 2) return null;
     // หาลิงก์ details จากทั้งแถว ไม่ผูกเลขคอลัมน์ (layout ใหม่มีคอลัมน์ "รูป" แทรกที่ index 1)
-    const titleLink = tr.querySelector('a[href*="details.php"][href*="id="]');
-    const id = idFromHref(titleLink?.getAttribute('href'));
+    const titleLink = torrentLinks(tr)[0];
+    const id = torrentIdFromHref(titleLink?.getAttribute('href'));
     if (!id) return null; // แถวโฆษณา/คั่น → ข้าม
     const camLink = tr.querySelector('a > img[src*="cam"]')?.parentElement;
     const nativeImg = tr.querySelector('td.poster-column img');
@@ -417,6 +454,117 @@
     return images;
   };
 
+  // ---------- ขอบคุณก่อนโหลด (แบบ autoThankHook ของ cover-next) ----------
+  // ปุ่มของเว็บ: <td id="saythanks"><a onclick="sndReq('action=say_thanks&id=N')"> → GET /ajax.php?<arg>
+  const thanked = new Set(store.read('thanked', []));
+  const thankRow = async (row) => {
+    if (thanked.has(row.id)) return;
+    const doc = await detailDoc(row.id, row.detailUrl);
+    const onclick = doc.querySelector('#saythanks a')?.getAttribute('onclick') || '';
+    const arg = /sndReq\(\s*'([^']*say_thanks[^']*)'/.exec(onclick)?.[1];
+    if (!arg) { log('thank: no button', row.id); return; }
+    const res = await fetch(`/ajax.php?${arg}`, { credentials: 'same-origin' });
+    log('thank', row.id, res.status);
+    if (res.ok) {
+      thanked.add(row.id);
+      store.write('thanked', [...thanked].slice(-5000));
+    }
+  };
+
+  const withTimeout = (p, ms) => Promise.race([p, sleep(ms)]);
+
+  // กดโหลดจากหน้ารายการ: ขอบคุณก่อน (รอไม่เกิน 5 วิ) แล้วค่อยไปลิงก์ดาวน์โหลด
+  const handleDownload = async (row, link, e) => {
+    markRow(row);
+    if (!cfg.autoThankList || thanked.has(row.id)) return; // ปล่อยให้ลิงก์ทำงานตามปกติ
+    e.preventDefault();
+    try { await withTimeout(thankRow(row), 5000); } catch (err) { log('thank fail', err); }
+    location.href = link;
+  };
+
+  // ---------- ปุ่ม Download บอกขนาด ----------
+  const sizeInGB = (text) => {
+    const m = /([\d.,]+)\s*(TB|GB|MB|KB)/i.exec(text || '');
+    if (!m) return 0;
+    const n = parseFloat(m[1].replace(/,/g, ''));
+    return n * ({ TB: 1024, GB: 1, MB: 1 / 1024, KB: 1 / 1048576 })[m[2].toUpperCase()];
+  };
+  const downloadButton = (row) => {
+    const link = row.downloadLinks[0]?.href;
+    if (!link) return null;
+    const big = sizeInGB(row.stats.size) > cfg.downloadWarnGB;
+    const a = el('a', {
+      href: link,
+      className: `bbc-btn bbc-btn-dl${big ? ' bbc-btn-big' : ''}`,
+      textContent: `⬇ Download ${row.stats.size !== '-' ? row.stats.size : ''}${downloaded.has(row.id) ? ' (โหลดไปแล้ว)' : ''}`,
+      title: big ? `ไฟล์ใหญ่กว่า ${cfg.downloadWarnGB} GB` : '',
+    });
+    a.addEventListener('click', (e) => handleDownload(row, link, e));
+    return a;
+  };
+
+  // ---------- ปุ่ม View: คำอธิบายเต็มเป็น popup ----------
+  // คำอธิบายเป็นข้อความที่ผู้ลงพิมพ์ → ตัด script/iframe/on* ออกก่อนใส่หน้า
+  const sanitize = (root) => {
+    root.querySelectorAll('script, iframe, object, embed, link, meta, form').forEach((n) => n.remove());
+    root.querySelectorAll('*').forEach((n) => {
+      for (const at of [...n.attributes]) {
+        if (/^on/i.test(at.name) || /^\s*javascript:/i.test(at.value)) n.removeAttribute(at.name);
+      }
+      if (n.tagName === 'A') { n.target = '_blank'; n.rel = 'noopener noreferrer'; }
+      if (n.tagName === 'IMG') n.referrerPolicy = 'no-referrer';
+    });
+    return root;
+  };
+
+  const openModal = (content) => {
+    const panel = el('div', { className: 'bbc-modal-panel', onclick: (e) => e.stopPropagation() },
+      el('button', { className: 'bbc-modal-close', textContent: '✕', onclick: () => close() }),
+      content);
+    const box = el('div', { className: 'bbc-modal' }, panel);
+    const api = { go() {}, close: () => close() };
+    const close = () => {
+      box.remove();
+      const k = albumStack.indexOf(api);
+      if (k >= 0) albumStack.splice(k, 1);
+    };
+    box.onclick = close;
+    albumStack.push(api); // ใช้ Esc ร่วมกับอัลบั้ม
+    document.body.append(box);
+    return panel;
+  };
+
+  const openDescription = async (row) => {
+    const body = el('div', { className: 'bbc-desc', textContent: 'กำลังโหลด…' });
+    const head = el('div', { className: 'bbc-desc-head' },
+      el('a', { href: row.detailUrl, target: '_blank', className: 'bbc-desc-title', textContent: row.title }));
+    const dl = downloadButton(row);
+    if (dl) head.append(dl);
+    openModal(el('div', {}, head, body));
+    try {
+      const doc = await detailDoc(row.id, row.detailUrl);
+      const src = doc.querySelector('.bb-descr')
+        || [...doc.querySelectorAll('td.rowhead')].find((t) => /^description$/i.test(t.textContent.trim()))?.nextElementSibling;
+      body.replaceChildren();
+      if (!src) { body.textContent = 'ไม่พบคำอธิบาย'; return; }
+      const copy = sanitize(document.importNode(src, true));
+      copy.querySelectorAll('img').forEach((img) => {
+        img.style.cursor = 'zoom-in';
+        img.addEventListener('click', (e) => { e.preventDefault(); openAlbum([img.src]); });
+      });
+      body.append(copy);
+    } catch (e) {
+      body.textContent = `โหลดไม่ได้: ${e}`;
+    }
+  };
+
+  const viewButton = (row) => el('a', {
+    href: '#',
+    className: 'bbc-btn',
+    textContent: '📄 View',
+    onclick: (e) => { e.preventDefault(); openDescription(row); },
+  });
+
   const makeThumb = (url) => {
     const img = el('img', { className: 'bbc-thumb', loading: 'lazy', referrerPolicy: 'no-referrer', src: url });
     return img;
@@ -427,18 +575,13 @@
     const box = el('div', {},
       el('a', { href: row.detailUrl, target: '_blank', className: 'bbc-cap-title', textContent: row.title }));
     const line = el('div', { className: 'bbc-cap-line' });
-    if (row.downloadLinks[0]) {
-      line.append(el('a', {
-        href: row.downloadLinks[0].href,
-        className: 'bbc-cap-btn',
-        textContent: downloaded.has(row.id) ? '⬇ Download (โหลดไปแล้ว)' : '⬇ Download',
-        onclick: () => markRow(row),
-      }));
-    }
+    const dl = downloadButton(row);
+    if (dl) line.append(dl);
+    line.append(viewButton(row));
     line.append(el('a', {
       href: '#',
-      className: 'bbc-cap-btn',
-      textContent: '🖼 รูปทั้งหมดของเรื่องนี้',
+      className: 'bbc-btn',
+      textContent: '🖼 รูปทั้งหมด',
       onclick: async (e) => {
         e.preventDefault();
         openAlbum(await albumOf(row));
@@ -499,15 +642,11 @@
     row.tr.after(el('tr', { className: 'bbc-expand-row' }, td));
     const images = await albumOf(row);
     td.textContent = '';
-    const bar = el('div', { className: 'bbc-expand-bar' },
-      el('a', { href: row.detailUrl, target: '_blank', textContent: 'เปิดหน้ารายละเอียด' }));
-    if (row.downloadLinks[0]) {
-      bar.append(' · ', el('a', {
-        href: row.downloadLinks[0].href,
-        textContent: downloaded.has(row.id) ? 'ดาวน์โหลด (โหลดไปแล้ว)' : 'ดาวน์โหลด',
-        onclick: () => markRow(row),
-      }));
-    }
+    const bar = el('div', { className: 'bbc-expand-bar' });
+    const dl = downloadButton(row);
+    if (dl) bar.append(dl);
+    bar.append(viewButton(row),
+      el('a', { href: row.detailUrl, target: '_blank', className: 'bbc-btn', textContent: '↗ หน้ารายละเอียด' }));
     td.append(bar);
     if (!images.length) { td.append(el('div', { textContent: 'ไม่พบรูป' })); return; }
     const grid = el('div', { className: 'bbc-expand-grid' });
@@ -521,14 +660,13 @@
 
   const markRow = (row) => {
     markAsDownloaded(row.id);
-    row.tr.classList.add('bbc-done');
+    if (cfg.markDownloaded) row.tr.classList.add('bbc-done');
   };
 
   const enhanceRow = (row, { observer, byCell, addColumn }) => {
-    if (cfg.markDownloaded) {
-      if (downloaded.has(row.id)) row.tr.classList.add('bbc-done');
-      row.downloadLinks.forEach((a) => a.addEventListener('click', () => markRow(row)));
-    }
+    if (cfg.markDownloaded && downloaded.has(row.id)) row.tr.classList.add('bbc-done');
+    // ลิงก์ดาวน์โหลดของเว็บในแถว: จำว่าโหลดแล้ว + ขอบคุณก่อน
+    row.downloadLinks.forEach((a) => a.addEventListener('click', (e) => handleDownload(row, a.href, e)));
 
     if (cfg.titleHover) attachHover(row.titleLink, () => bigCoverOf(row));
 
@@ -608,6 +746,14 @@
     allRows.forEach((row) => row.tr.classList.toggle('bbc-done', downloaded.has(row.id)));
   };
 
+  // หน้ารายละเอียดที่โหลดมาเบื้องหลัง (ปก/View/ขอบคุณ) บอกว่าเคยโหลดแล้ว → ทำเครื่องหมายด้วย
+  onDetailDoc.push((id, doc) => {
+    if (downloaded.has(id) || !DOWNLOADED_MARK.test(doc.body?.textContent || '')) return;
+    log('detail says downloaded', id);
+    markAsDownloaded(id);
+    refreshDownloadedMarks();
+  });
+
   // =====================================================================
   // ประวัติโหลดย้อนหลัง: downfinish.php?id=<ของเรา>&page=N (25 รายการ/หน้า)
   // ครั้งแรกดึงจนหมด (ไม่เกิน 100 หน้า) ครั้งต่อไปดึงเฉพาะหน้าแรก ๆ จนเจอ id ที่รู้แล้ว
@@ -629,8 +775,7 @@
     for (let page = 0; page < MAX_HISTORY_PAGES; page++) {
       let doc;
       try { doc = await fetchDoc(`/downfinish.php?id=${uid}&page=${page}`); } catch (e) { log('history fail', page, e); return; }
-      const ids = [...doc.querySelectorAll('a[href*="details.php"][href*="id="]')]
-        .map((a) => idFromHref(a.getAttribute('href'))).filter(Boolean);
+      const ids = torrentLinks(doc).map((a) => torrentIdFromHref(a.getAttribute('href'))).filter(Boolean);
       if (!ids.length) { state.complete = true; break; }
       const fresh = ids.filter((id) => !downloaded.has(id));
       fresh.forEach((id) => downloaded.add(id));
@@ -661,10 +806,11 @@
   const runDetailPage = () => {
     const id = idFromHref(location.search);
     if (!id) return;
-    if (cfg.markDownloaded) {
-      document.querySelectorAll('a[href*="download"]').forEach((a) =>
-        a.addEventListener('click', () => markAsDownloaded(id)));
-    }
+    document.querySelectorAll('a[href*="download"]').forEach((a) =>
+      a.addEventListener('click', () => markAsDownloaded(id)));
+    // เว็บบอกเองว่าเคยโหลดแล้ว
+    if (DOWNLOADED_MARK.test(document.body.textContent)) markAsDownloaded(id);
+    if (cfg.fixImageOverScreen) document.documentElement.classList.add('bbc-fit-images');
     if (cfg.cleanBookmarks) {
       document.querySelectorAll('a[href*="bookmarks.php"]').forEach((a) => { a.style.display = 'none'; });
     }
@@ -685,14 +831,19 @@
     if (cfg.autoThankDetail) {
       // คลิกปุ่มของเว็บเอง แทนการประกอบ URL ajax เอง → เว็บเปลี่ยน endpoint ก็ยังทำงาน
       const btn = document.querySelector('#saythanks a');
-      if (btn) { log('auto thank', id); btn.click(); }
+      if (btn && !thanked.has(id)) {
+        log('auto thank', id);
+        btn.click();
+        thanked.add(id);
+        store.write('thanked', [...thanked].slice(-5000));
+      }
     }
   };
 
   // หน้า downfinish ที่เปิดอยู่: เก็บ id ที่เห็นไว้ด้วย
   const runDownFinishPage = () => {
-    document.querySelectorAll('a[href*="details.php"][href*="id="]').forEach((a) => {
-      const id = idFromHref(a.getAttribute('href'));
+    torrentLinks(document).forEach((a) => {
+      const id = torrentIdFromHref(a.getAttribute('href'));
       if (id) downloaded.add(id);
     });
     saveDownloaded();
@@ -703,6 +854,31 @@
   // =====================================================================
   GM_addStyle(`
     .bbc-cell { width: 90px; text-align: center; vertical-align: middle; }
+    html.bbc-fit-images .bb-descr img, html.bbc-fit-images td img, .bbc-desc img {
+      max-width: 100% !important; height: auto !important;
+    }
+    .bbc-btn {
+      display: inline-block; color: #fff !important; text-decoration: none !important; background: #455a64;
+      padding: 3px 10px; border-radius: 4px; font-size: 12px; line-height: 1.6; white-space: nowrap;
+    }
+    .bbc-btn:hover { filter: brightness(1.15); }
+    .bbc-btn-dl { background: #2e7d32; }
+    .bbc-btn-big { background: #c62828; }
+    .bbc-expand-bar { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    .bbc-modal {
+      position: fixed; inset: 0; z-index: 99999; background: rgba(0,0,0,.75);
+      display: flex; align-items: flex-start; justify-content: center; overflow: auto; padding: 4vh 16px;
+    }
+    .bbc-modal-panel {
+      position: relative; background: #fff; color: #222; max-width: 900px; width: 100%;
+      border-radius: 8px; padding: 16px 20px; box-shadow: 0 8px 40px rgba(0,0,0,.5);
+    }
+    .bbc-modal-close {
+      position: absolute; top: 8px; right: 10px; border: 0; background: none; font-size: 20px; cursor: pointer; color: #666;
+    }
+    .bbc-desc-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 0 28px 12px 0; }
+    .bbc-desc-title { font-weight: bold; font-size: 15px; }
+    .bbc-desc { overflow-wrap: anywhere; }
     .bbc-thumb { max-width: 84px; max-height: 118px; display: block; margin: auto; border-radius: 4px; }
     .bbc-hover {
       position: fixed; z-index: 99998; display: none; pointer-events: none;
