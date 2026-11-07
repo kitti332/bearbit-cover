@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bearbit Cover (lite) — local loader
 // @namespace    kitti.local
-// @version      0.4.0
+// @version      0.4.1
 // @description  ตัวโหลด: ดึง bearbit-cover.user.js จากไฟล์ในเครื่อง แก้ไฟล์นั้นแล้ว refresh หน้าเว็บได้เลย
 // @match        https://www.bearbit.org
 // @match        https://www.bearbit.org/index.php*

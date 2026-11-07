@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bearbit Cover (lite)
 // @namespace    kitti.local
-// @version      0.4.0
+// @version      0.4.1
 // @description  หน้าปก, รูปใหญ่, อัลบั้ม, ปุ่มขยาย, สีเทาเมื่อโหลดแล้ว ฯลฯ — เขียนใหม่จาก concept ของ cover-next
 // @homepageURL  https://github.com/kitti332/bearbit-cover
 // @updateURL    https://raw.githubusercontent.com/kitti332/bearbit-cover/main/bearbit-cover.user.js
@@ -854,7 +854,9 @@
   // =====================================================================
   GM_addStyle(`
     .bbc-cell { width: 90px; text-align: center; vertical-align: middle; }
-    html.bbc-fit-images .bb-descr img, html.bbc-fit-images td img, .bbc-desc img {
+    /* ย่อเฉพาะรูปในคำอธิบาย — ห้ามใช้กับ td img ทั่วไป: แถบ Traffic ของเว็บเป็นรูปที่บีบความสูงไว้
+       ถ้าโดน height:auto จะกลายเป็นแท่งแนวตั้งยาว (บั๊ก v0.4.0) */
+    html.bbc-fit-images .bb-descr img, .bbc-desc img {
       max-width: 100% !important; height: auto !important;
     }
     .bbc-btn {
