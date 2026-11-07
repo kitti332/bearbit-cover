@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bearbit Cover (lite)
 // @namespace    kitti.local
-// @version      0.6.1
+// @version      0.6.2
 // @description  หน้าปก, รูปใหญ่, อัลบั้ม, ปุ่มขยาย, สีเทาเมื่อโหลดแล้ว ฯลฯ — เขียนใหม่จาก concept ของ cover-next
 // @homepageURL  https://github.com/kitti332/bearbit-cover
 // @updateURL    https://raw.githubusercontent.com/kitti332/bearbit-cover/main/bearbit-cover.user.js
@@ -319,9 +319,18 @@
   // =====================================================================
   let hoverImg = null;
   let hoverToken = 0;
-  const showHover = (src, ev) => {
+  // fallback: async () => url สำรอง เมื่อรูปหลักโหลดไม่ได้ (เช่น โฮสต์รูปต้นฉบับตาย → proxy ตอบ 404)
+  const showHover = (src, ev, fallback) => {
     if (!hoverImg) hoverImg = document.body.appendChild(el('img', { className: 'bbc-hover', referrerPolicy: 'no-referrer' }));
-    hoverImg.onload = () => moveHover(ev); // ขนาดจริงมาแล้ว จัดตำแหน่งใหม่
+    const token = hoverToken;
+    hoverImg.onload = () => moveHover(lastHoverEv || ev); // ขนาดจริงมาแล้ว จัดตำแหน่งใหม่
+    hoverImg.onerror = async () => {
+      hoverImg.onerror = null;
+      const alt = fallback ? await fallback().catch(() => null) : null;
+      if (token !== hoverToken) return; // เมาส์ออกไปแล้ว
+      if (alt && alt !== src) hoverImg.src = alt;
+      else hoverImg.style.display = 'none';
+    };
     hoverImg.src = src;
     hoverImg.style.display = 'block';
     moveHover(ev);
@@ -353,11 +362,11 @@
   const hideHover = () => { hoverToken++; if (hoverImg) hoverImg.style.display = 'none'; };
 
   // getUrl อาจเป็น async (ต้องโหลดหน้ารายละเอียดก่อน) → ใช้ token กันรูปเด้งหลังเมาส์ออกไปแล้ว
-  const attachHover = (target, getUrl) => {
+  const attachHover = (target, getUrl, getFallback) => {
     target.addEventListener('mouseenter', async (e) => {
       const token = ++hoverToken;
       const url = await getUrl();
-      if (url && token === hoverToken) showHover(url, e);
+      if (url && token === hoverToken) showHover(url, e, getFallback);
     });
     target.addEventListener('mousemove', moveHover);
     target.addEventListener('mouseleave', hideHover);
@@ -427,7 +436,19 @@
       if (my !== token) return; // เลื่อนไปรูปอื่นแล้ว
       if (!url) { status.textContent = 'ไม่มีรูป'; img.removeAttribute('src'); return; }
       img.onload = () => { if (my === token) { status.textContent = ''; img.style.visibility = ''; } };
-      img.onerror = () => { if (my === token) status.textContent = 'โหลดรูปไม่ได้'; };
+      let triedFallback = false;
+      img.onerror = async () => {
+        if (my !== token) return;
+        // รูปหลักเสีย → ลองรูปสำรอง (ปกจากหน้ารายละเอียด) ครั้งเดียว
+        if (!triedFallback && it.fallback) {
+          triedFallback = true;
+          status.textContent = 'รูปหลักเสีย กำลังหารูปสำรอง…';
+          const alt = await it.fallback().catch(() => null);
+          if (my !== token) return;
+          if (alt && alt !== url) { img.src = alt; return; }
+        }
+        status.textContent = 'โหลดรูปไม่ได้ (โฮสต์รูปต้นฉบับอาจปิดไปแล้ว)';
+      };
       img.src = url;
       box.scrollTo?.(0, 0); // รูปยาว: เริ่มดูจากหัวรูปทุกครั้งที่เปลี่ยนรูป
       preload(i + 1);
@@ -498,16 +519,24 @@
   const detailOf = (row) => getDetail(row.id, row.detailUrl);
 
   // URL รูปใหญ่ของแถว: รูปเว็บ (ขยาย) > ลิงก์กล้อง > จากหน้ารายละเอียด
-  const bigCoverOf = async (row) => {
-    if (row.nativeImg) return enlarge(row.nativeImg.src);
-    if (row.directCover) return row.directCover;
+  // รูปของเว็บใช้ได้ไหม (โฮสต์ต้นฉบับตาย → proxy 404 → รูปเสีย)
+  const nativeOk = (row) => !!row.nativeImg && !row.nativeBroken;
+
+  // ปกจากหน้ารายละเอียด (ScreenShot / รูปในคำอธิบาย) — มักอยู่คนละโฮสต์กับรูปของเว็บ
+  const detailCoverOf = async (row) => {
     try { return (await detailOf(row)).cover || null; } catch { return null; }
+  };
+
+  const bigCoverOf = async (row) => {
+    if (nativeOk(row)) return enlarge(row.nativeImg.src);
+    if (row.directCover) return row.directCover;
+    return detailCoverOf(row);
   };
 
   const albumOf = async (row) => {
     let images = [];
     try { images = [...(await detailOf(row)).images]; } catch (e) { log('album fail', e); }
-    const big = row.nativeImg ? enlarge(row.nativeImg.src) : null;
+    const big = nativeOk(row) ? enlarge(row.nativeImg.src) : null;
     if (big && !images.length) images.push(big);
     return images;
   };
@@ -672,12 +701,16 @@
 
   // อัลบั้มทั้งหน้า: ปกของทุก torrent เรียงต่อกัน ← → เปลี่ยนเรื่อง (แบบ cover-next เดิม)
   const openPageAlbum = (row) => {
-    const items = allRows.map((r) => ({ load: () => bigCoverOf(r), caption: () => rowCaption(r) }));
+    const items = allRows.map((r) => ({
+      load: () => bigCoverOf(r),
+      fallback: () => detailCoverOf(r),
+      caption: () => rowCaption(r),
+    }));
     openAlbum(items, allRows.indexOf(row), { wrap: false });
   };
 
   const wireCover = (img, row) => {
-    if (cfg.previewHover) attachHover(img, () => bigCoverOf(row));
+    if (cfg.previewHover) attachHover(img, () => bigCoverOf(row), () => detailCoverOf(row));
     if (cfg.album) {
       img.style.cursor = 'zoom-in';
       img.addEventListener('click', (e) => {
@@ -745,7 +778,7 @@
     // ลิงก์ดาวน์โหลดของเว็บในแถว: จำว่าโหลดแล้ว + ขอบคุณก่อน
     row.downloadLinks.forEach((a) => a.addEventListener('click', (e) => handleDownload(row, a.href, e)));
 
-    if (cfg.titleHover) attachHover(row.titleLink, () => bigCoverOf(row));
+    if (cfg.titleHover) attachHover(row.titleLink, () => bigCoverOf(row), () => detailCoverOf(row));
 
     if (cfg.expandButton) {
       const btn = el('a', { href: '#', className: 'bbc-expand-btn', textContent: '▾ ขยาย' });
@@ -756,9 +789,20 @@
     if (!cfg.preview) return;
     if (row.nativeImg) {
       // ใช้รูปของเว็บ ปิด hover ของเว็บไม่ให้ซ้อน
-      row.nativeImg.removeAttribute('onmouseover');
-      row.nativeImg.removeAttribute('onmouseout');
-      wireCover(row.nativeImg, row);
+      const img = row.nativeImg;
+      img.removeAttribute('onmouseover');
+      img.removeAttribute('onmouseout');
+      wireCover(img, row);
+      // รูปของเว็บเสีย (โฮสต์ต้นฉบับตาย → 404) → แทนด้วยปกจากหน้ารายละเอียด
+      const replaceBroken = () => {
+        if (row.nativeBroken) return;
+        row.nativeBroken = true;
+        log('native poster broken → detail cover', row.id);
+        byCell.set(row.nativeCell, row);
+        fillCell(row.nativeCell, row);
+      };
+      if (img.complete && img.naturalWidth === 0 && img.getAttribute('src')) replaceBroken(); // เสียไปก่อนสคริปต์รัน
+      else img.addEventListener('error', replaceBroken, { once: true });
       return;
     }
     let td = row.nativeCell;
